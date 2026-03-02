@@ -4,6 +4,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from src.FactorioPreviewToolkit.shared.structured_logger import log, log_section
 from src.FactorioPreviewToolkit.shared.utils import detect_os
 
 
+@lru_cache(maxsize=4)
 def get_factorio_version(factorio_path: Path) -> tuple[int, int]:
     """
     Detects the major and minor Factorio version from CLI output.
@@ -29,12 +31,11 @@ def get_factorio_version(factorio_path: Path) -> tuple[int, int]:
     return (0, 0)  # Default fallback
 
 
-def wait_for_factorio_lock_to_release(timeout_in_sec: int = 30) -> bool:
+def wait_for_factorio_lock_to_release(lock_file: Path, timeout_in_sec: int = 30) -> bool:
     """
     Waits for the Factorio lock file to be released, up to a timeout.
     """
     start_time = time.time()
-    lock_file = constants.FACTORIO_LOCK_FILEPATH
 
     while lock_file.exists():
         log.info(f"📋 Waiting for '{lock_file}' release.")
@@ -60,24 +61,31 @@ def _build_factorio_command(executable_path: Path, args: list[str], config_path:
     """
     Builds the full Factorio CLI command with resolved paths and config file.
     """
+    command_args = args.copy()
+
     # Remove unsupported CLI args if needed
     if get_factorio_version(executable_path)[0] <= 1:
-        remove_map_preview_planet_arg(args)
+        remove_map_preview_planet_arg(command_args)
 
-    resolved_args = [str(Path(arg).resolve()) if not arg.startswith("--") else arg for arg in args]
+    resolved_args = [str(Path(arg).resolve()) if not arg.startswith("--") else arg for arg in command_args]
     return [str(executable_path), "--config", str(config_path)] + resolved_args
 
 
-def _build_subprocess_kwargs() -> dict[str, Any]:
+def _build_subprocess_kwargs(working_directory: Path | None) -> dict[str, Any]:
     """
     Builds default subprocess.run kwargs with logging and priority settings.
     """
-    return {
+    kwargs: dict[str, Any] = {
         "check": True,
         "capture_output": True,
         "text": True,
         **_get_priority_settings(),
     }
+
+    if working_directory is not None:
+        kwargs["cwd"] = str(working_directory)
+
+    return kwargs
 
 
 def _get_priority_settings() -> dict[str, Any]:
@@ -91,24 +99,26 @@ def _get_priority_settings() -> dict[str, Any]:
     return {}
 
 
-def update_config_file(config_path: Path) -> None:
+def update_config_file(config_path: Path, write_data_dir: Path) -> None:
     """
     Updates the Factorio config file if the content has to change.
     If the file doesn't exist, it will be created with the default content.
     """
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
     existing_content = ""
-    default_content = _generate_default_config_content()
+    default_content = _generate_default_config_content(write_data_dir)
     if config_path.exists():
-        with open(config_path, "r") as config_file:
+        with config_path.open("r", encoding="utf-8") as config_file:
             existing_content = config_file.read()
     if existing_content != default_content:
         with log_section(f"📄 Creating/Updating Factorio config at {config_path}..."):
-            with open(config_path, "w") as config_file:
+            with config_path.open("w", encoding="utf-8") as config_file:
                 config_file.write(default_content)
             log.info("✅ Factorio config created/updated.")
 
 
-def _generate_default_config_content() -> str:
+def _generate_default_config_content(write_data_dir: Path) -> str:
     """
     Generates the default content for the config file.
     """
@@ -121,23 +131,32 @@ def _generate_default_config_content() -> str:
         ; version=12
         [path]
         read-data={read_data}
-        write-data={constants.FACTORIO_WRITE_DATA_DIR}
+        write-data={write_data_dir}
         """
     )
 
 
-def run_factorio_command(factorio_executable_path: Path, args: list[str]) -> None:
+def run_factorio_command(
+    factorio_executable_path: Path,
+    args: list[str],
+    config_path: Path | None = None,
+    write_data_dir: Path | None = None,
+    working_directory: Path | None = None,
+) -> None:
     """
     Runs Factorio with the given args and config, with low-priority CPU settings.
     """
-    config_path = constants.FACTORIO_CONFIG_FILEPATH
-    update_config_file(config_path)
-    log.info(f"⚙️ Using config file: {config_path}")
+    resolved_config_path = config_path or constants.FACTORIO_CONFIG_FILEPATH
+    resolved_write_data_dir = write_data_dir or constants.FACTORIO_WRITE_DATA_DIR
+    resolved_write_data_dir.mkdir(parents=True, exist_ok=True)
+
+    update_config_file(resolved_config_path, resolved_write_data_dir)
+    log.info(f"⚙️ Using config file: {resolved_config_path}")
 
     try:
-        wait_for_factorio_lock_to_release()
-        cmd = _build_factorio_command(factorio_executable_path, args, config_path)
-        kwargs = _build_subprocess_kwargs()
+        wait_for_factorio_lock_to_release(resolved_write_data_dir / ".lock")
+        cmd = _build_factorio_command(factorio_executable_path, args, resolved_config_path)
+        kwargs = _build_subprocess_kwargs(working_directory)
         subprocess.run(cmd, **kwargs)
 
     except FileNotFoundError:
