@@ -31,11 +31,12 @@ def get_factorio_version(factorio_path: Path) -> tuple[int, int]:
     return (0, 0)  # Default fallback
 
 
-def wait_for_factorio_lock_to_release(lock_file: Path, timeout_in_sec: int = 30) -> bool:
+def wait_for_factorio_lock_to_release(timeout_in_sec: int = 30) -> bool:
     """
     Waits for the Factorio lock file to be released, up to a timeout.
     """
     start_time = time.time()
+    lock_file = constants.FACTORIO_LOCK_FILEPATH
 
     while lock_file.exists():
         log.info(f"📋 Waiting for '{lock_file}' release.")
@@ -154,7 +155,7 @@ def run_factorio_command(
     log.info(f"⚙️ Using config file: {resolved_config_path}")
 
     try:
-        wait_for_factorio_lock_to_release(resolved_write_data_dir / ".lock")
+        wait_for_factorio_lock_to_release()
         cmd = _build_factorio_command(factorio_executable_path, args, resolved_config_path)
         kwargs = _build_subprocess_kwargs(working_directory)
         subprocess.run(cmd, **kwargs)
