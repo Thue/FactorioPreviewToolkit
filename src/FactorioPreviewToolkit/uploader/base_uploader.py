@@ -37,12 +37,12 @@ def _write_viewer_config_js(planet_image_links: dict[str, str], planet_names_lin
             raise
 
 
-def _load_planet_names() -> list[str]:
+def _load_planet_names(min_mtime: float | None = None) -> list[str]:
     """
     Loads the list of planet names from the JSON file generated during preview setup.
     """
     planet_file = constants.PLANET_NAMES_REMOTE_VIEWER_FILEPATH
-    _wait_for_file(planet_file)
+    _wait_for_file(planet_file, min_mtime=min_mtime)
     with log_section("📄 Loading planet names..."):
         try:
             with planet_file.open("r", encoding="utf-8") as f:
@@ -73,6 +73,7 @@ def _wait_for_file(
     path: Path,
     timeout_in_sec: int = 120,
     poll_interval_sec: float = 0.2,
+    min_mtime: float | None = None,
 ) -> None:
     """
     Waits until a file exists, is non-empty, and has a stable size/mtime.
@@ -87,7 +88,8 @@ def _wait_for_file(
             stat = path.stat()
             signature = (stat.st_size, stat.st_mtime)
 
-            if stat.st_size > 0 and signature == last_signature:
+            is_fresh_enough = min_mtime is None or stat.st_mtime >= min_mtime
+            if stat.st_size > 0 and is_fresh_enough and signature == last_signature:
                 stable_checks += 1
                 if stable_checks >= 2:
                     return
@@ -134,11 +136,12 @@ class BaseUploader(ABC):
         Saves resulting download links to a JavaScript config file.
         """
         with log_section("🚀 Uploading preview assets..."):
-            planet_names = _load_planet_names()
+            run_started_at = time.time()
+            planet_names = _load_planet_names(min_mtime=run_started_at)
 
             with ThreadPoolExecutor(max_workers=2) as executor:
-                planet_names_future = executor.submit(self._upload_planet_names_file)
-                planet_images_future = executor.submit(self._upload_planet_images, planet_names)
+                planet_names_future = executor.submit(self._upload_planet_names_file, run_started_at)
+                planet_images_future = executor.submit(self._upload_planet_images, planet_names, run_started_at)
 
                 planet_names_link = planet_names_future.result()
                 planet_image_links = planet_images_future.result()
@@ -146,12 +149,13 @@ class BaseUploader(ABC):
             _write_viewer_config_js(planet_image_links, planet_names_link)
             log.info("✅ All assets uploaded successfully.")
 
-    def _upload_planet_names_file(self) -> str:
+    def _upload_planet_names_file(self, run_started_at: float) -> str:
         """
         Uploads the planet names JS file and returns its public URL.
         """
         with log_section("📤 Uploading planet names file..."):
             try:
+                _wait_for_file(constants.PLANET_NAMES_REMOTE_VIEWER_FILEPATH, min_mtime=run_started_at)
                 # Add a timestamp to ensure the file appears changed to Dropbox,
                 # even if its actual content hasn't changed. This helps preserve
                 # a stable shareable link when using rclone.
@@ -166,7 +170,7 @@ class BaseUploader(ABC):
                 log.error("❌ Failed to upload planet names.")
                 raise
 
-    def _upload_planet_images(self, planet_names: list[str]) -> dict[str, str]:
+    def _upload_planet_images(self, planet_names: list[str], run_started_at: float) -> dict[str, str]:
         """
         Uploads all preview images in parallel and returns a dict of download links.
         """
@@ -174,7 +178,7 @@ class BaseUploader(ABC):
         def upload_planet(planet: str) -> tuple[str, str]:
             with log_section(f"🌍 Uploading {planet} preview..."):
                 image_path = constants.PREVIEWS_OUTPUT_DIR / f"{planet}.png"
-                _wait_for_file(image_path)
+                _wait_for_file(image_path, min_mtime=run_started_at)
                 _optimize_png(image_path)
                 _add_upload_timestamp_to_png(image_path)
                 url = self.upload_single(image_path, f"{planet}.png")
