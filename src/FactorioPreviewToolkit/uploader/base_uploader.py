@@ -135,8 +135,14 @@ class BaseUploader(ABC):
         """
         with log_section("🚀 Uploading preview assets..."):
             planet_names = _load_planet_names()
-            planet_names_link = self._upload_planet_names_file()
-            planet_image_links = self._upload_planet_images(planet_names)
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                planet_names_future = executor.submit(self._upload_planet_names_file)
+                planet_images_future = executor.submit(self._upload_planet_images, planet_names)
+
+                planet_names_link = planet_names_future.result()
+                planet_image_links = planet_images_future.result()
+
             _write_viewer_config_js(planet_image_links, planet_names_link)
             log.info("✅ All assets uploaded successfully.")
 
