@@ -1,5 +1,7 @@
 import json
+import time
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -40,6 +42,7 @@ def _load_planet_names() -> list[str]:
     Loads the list of planet names from the JSON file generated during preview setup.
     """
     planet_file = constants.PLANET_NAMES_REMOTE_VIEWER_FILEPATH
+    _wait_for_file(planet_file)
     with log_section("📄 Loading planet names..."):
         try:
             with planet_file.open("r", encoding="utf-8") as f:
@@ -63,6 +66,39 @@ def _inject_upload_timestamp_into_planet_names_file() -> None:
         f.seek(0)
         json.dump(data, f, indent=2)
         f.truncate()
+
+
+def _wait_for_file(
+    path: Path,
+    timeout_in_sec: int = 120,
+    poll_interval_sec: float = 0.2,
+) -> None:
+    """
+    Waits until a file exists, is non-empty, and has a stable size/mtime.
+    This avoids reading/uploading files that are still being written.
+    """
+    start = time.time()
+    stable_checks = 0
+    last_signature: tuple[int, float] | None = None
+
+    while True:
+        if path.exists():
+            stat = path.stat()
+            signature = (stat.st_size, stat.st_mtime)
+
+            if stat.st_size > 0 and signature == last_signature:
+                stable_checks += 1
+                if stable_checks >= 2:
+                    return
+            else:
+                stable_checks = 0
+
+            last_signature = signature
+
+        if time.time() - start > timeout_in_sec:
+            raise TimeoutError(f"Timed out waiting for stable file: {path}")
+
+        time.sleep(poll_interval_sec)
 
 
 def _add_upload_timestamp_to_png(path: Path) -> None:
@@ -126,21 +162,35 @@ class BaseUploader(ABC):
 
     def _upload_planet_images(self, planet_names: list[str]) -> dict[str, str]:
         """
-        Uploads all preview images and returns a dict of download links.
+        Uploads all preview images in parallel and returns a dict of download links.
         """
-        links: dict[str, str] = {}
-        for planet in planet_names:
+
+        def upload_planet(planet: str) -> tuple[str, str]:
             with log_section(f"🌍 Uploading {planet} preview..."):
                 image_path = constants.PREVIEWS_OUTPUT_DIR / f"{planet}.png"
+                _wait_for_file(image_path)
+                _optimize_png(image_path)
+                _add_upload_timestamp_to_png(image_path)
+                url = self.upload_single(image_path, f"{planet}.png")
+                log.info(f"✅ {planet} uploaded.")
+                return planet, url
+
+        links: dict[str, str] = {}
+        if not planet_names:
+            return links
+
+        max_workers = min(6, len(planet_names))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(upload_planet, planet): planet for planet in planet_names}
+            for future in as_completed(future_map):
+                planet = future_map[future]
                 try:
-                    _optimize_png(image_path)
-                    _add_upload_timestamp_to_png(image_path)
-                    url = self.upload_single(image_path, f"{planet}.png")
-                    links[planet] = url
-                    log.info(f"✅ {planet} uploaded.")
+                    uploaded_planet, url = future.result()
+                    links[uploaded_planet] = url
                 except Exception:
                     log.error(f"❌ Failed to upload {planet}.png")
                     raise
+
         return links
 
     @abstractmethod

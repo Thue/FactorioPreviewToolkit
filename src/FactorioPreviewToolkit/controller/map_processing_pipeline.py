@@ -1,4 +1,5 @@
 import sys
+from queue import Queue
 from pathlib import Path
 from threading import Lock, Thread
 
@@ -97,25 +98,61 @@ class MapProcessingPipeline:
 
     def _execute_pipeline(self) -> None:
         """
-        Executes the preview generator and uploader sequentially.
+        Executes the preview generator and uploader concurrently.
         Aborts on failure or if stopped mid-execution.
         """
         with self._lock:
             play_start_sound()
 
             assert self.generator_executor is not None
-            generator_status = self.generator_executor.run_subprocess()
-            if generator_status == SubprocessStatus.KILLED:
-                return
-            if generator_status != SubprocessStatus.SUCCESS:
-                play_failure_sound()
+            assert self.uploader_executor is not None
+
+            result_queue: Queue[tuple[str, SubprocessStatus]] = Queue()
+
+            def run_named(name: str, executor: SingleProcessExecutor) -> None:
+                status = executor.run_subprocess()
+                result_queue.put((name, status))
+
+            generator_thread = Thread(
+                target=run_named,
+                args=("generator", self.generator_executor),
+                name="GeneratorSubprocessThread",
+                daemon=True,
+            )
+            uploader_thread = Thread(
+                target=run_named,
+                args=("uploader", self.uploader_executor),
+                name="UploaderSubprocessThread",
+                daemon=True,
+            )
+
+            generator_thread.start()
+            uploader_thread.start()
+
+            results: dict[str, SubprocessStatus] = {}
+            while len(results) < 2:
+                name, status = result_queue.get()
+                results[name] = status
+
+                if status == SubprocessStatus.KILLED:
+                    continue
+
+                if status != SubprocessStatus.SUCCESS:
+                    if name == "generator":
+                        self.uploader_executor.stop()
+                    else:
+                        self.generator_executor.stop()
+
+            generator_thread.join()
+            uploader_thread.join()
+
+            generator_status = results.get("generator", SubprocessStatus.FAILED)
+            upload_status = results.get("uploader", SubprocessStatus.FAILED)
+
+            if generator_status == SubprocessStatus.KILLED or upload_status == SubprocessStatus.KILLED:
                 return
 
-            assert self.uploader_executor is not None
-            upload_status = self.uploader_executor.run_subprocess()
-            if upload_status == SubprocessStatus.KILLED:
-                return
-            if upload_status != SubprocessStatus.SUCCESS:
+            if generator_status != SubprocessStatus.SUCCESS or upload_status != SubprocessStatus.SUCCESS:
                 play_failure_sound()
                 return
 
