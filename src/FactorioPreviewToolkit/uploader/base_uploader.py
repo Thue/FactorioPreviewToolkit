@@ -68,6 +68,7 @@ def _inject_upload_timestamp_into_planet_names_file() -> None:
         f.truncate()
 
 
+
 def _wait_for_file(
     path: Path,
     timeout_in_sec: int = 120,
@@ -99,7 +100,6 @@ def _wait_for_file(
             raise TimeoutError(f"Timed out waiting for stable file: {path}")
 
         time.sleep(poll_interval_sec)
-
 
 def _add_upload_timestamp_to_png(path: Path) -> None:
     """
