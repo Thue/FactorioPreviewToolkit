@@ -72,7 +72,7 @@ def _build_factorio_command(executable_path: Path, args: list[str], config_path:
     return [str(executable_path), "--config", str(config_path)] + resolved_args
 
 
-def _build_subprocess_kwargs(working_directory: Path | None) -> dict[str, Any]:
+def _build_subprocess_kwargs() -> dict[str, Any]:
     """
     Builds default subprocess.run kwargs with logging and priority settings.
     """
@@ -82,9 +82,6 @@ def _build_subprocess_kwargs(working_directory: Path | None) -> dict[str, Any]:
         "text": True,
         **_get_priority_settings(),
     }
-
-    if working_directory is not None:
-        kwargs["cwd"] = str(working_directory)
 
     return kwargs
 
@@ -142,7 +139,6 @@ def run_factorio_command(
     args: list[str],
     config_path: Path | None = None,
     write_data_dir: Path | None = None,
-    working_directory: Path | None = None,
 ) -> None:
     """
     Runs Factorio with the given args and config, with low-priority CPU settings.
@@ -157,7 +153,7 @@ def run_factorio_command(
     try:
         wait_for_factorio_lock_to_release()
         cmd = _build_factorio_command(factorio_executable_path, args, resolved_config_path)
-        kwargs = _build_subprocess_kwargs(working_directory)
+        kwargs = _build_subprocess_kwargs()
         subprocess.run(cmd, **kwargs)
 
     except FileNotFoundError:
