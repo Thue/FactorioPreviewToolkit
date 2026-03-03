@@ -97,7 +97,7 @@ def _get_priority_settings() -> dict[str, Any]:
     return {}
 
 
-def update_config_file(config_path: Path, write_data_dir: Path) -> None:
+def update_config_file(config_path: Path) -> None:
     """
     Updates the Factorio config file if the content has to change.
     If the file doesn't exist, it will be created with the default content.
@@ -105,7 +105,7 @@ def update_config_file(config_path: Path, write_data_dir: Path) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing_content = ""
-    default_content = _generate_default_config_content(write_data_dir)
+    default_content = _generate_default_config_content()
     if config_path.exists():
         with config_path.open("r", encoding="utf-8") as config_file:
             existing_content = config_file.read()
@@ -116,7 +116,7 @@ def update_config_file(config_path: Path, write_data_dir: Path) -> None:
             log.info("✅ Factorio config created/updated.")
 
 
-def _generate_default_config_content(write_data_dir: Path) -> str:
+def _generate_default_config_content() -> str:
     """
     Generates the default content for the config file.
     """
@@ -129,7 +129,7 @@ def _generate_default_config_content(write_data_dir: Path) -> str:
         ; version=12
         [path]
         read-data={read_data}
-        write-data={write_data_dir}
+        write-data={constants.FACTORIO_WRITE_DATA_DIR}
         """
     )
 
@@ -138,16 +138,13 @@ def run_factorio_command(
     factorio_executable_path: Path,
     args: list[str],
     config_path: Path | None = None,
-    write_data_dir: Path | None = None,
 ) -> None:
     """
     Runs Factorio with the given args and config, with low-priority CPU settings.
     """
     resolved_config_path = config_path or constants.FACTORIO_CONFIG_FILEPATH
-    resolved_write_data_dir = write_data_dir or constants.FACTORIO_WRITE_DATA_DIR
-    resolved_write_data_dir.mkdir(parents=True, exist_ok=True)
 
-    update_config_file(resolved_config_path, resolved_write_data_dir)
+    update_config_file(resolved_config_path)
     log.info(f"⚙️ Using config file: {resolved_config_path}")
 
     try:
